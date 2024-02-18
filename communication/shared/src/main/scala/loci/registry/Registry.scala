@@ -277,6 +277,23 @@ class Registry {
         java.util.UUID.randomUUID.toString,
         this))
 
+  def lookupSelfValue[T](name: String)(implicit builder: BindingBuilder.Value[T, _]): builder.Result =
+    lookupSelf(builder(name))
+
+  def lookupSelf[T](name: String)(
+    implicit builder: BindingBuilder[T, _]): builder.Result =
+    lookupSelf(builder(name))
+
+  def lookupSelf[T, R](binding: Binding[T, R]): R =
+    bindings.lookupSelf[T, R](
+      binding,
+      () => Registry.AbstractionRefImpl(
+        binding.name,
+        null,
+        java.util.UUID.randomUUID.toString,
+        this)
+    )
+
 
   def connect(connector: Connector[Connections.Protocol]): Future[RemoteRef] = {
     val promise = Promise[RemoteRef]()

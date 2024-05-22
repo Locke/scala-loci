@@ -160,4 +160,106 @@ object RegistryTests extends Matchers {
       cleanup
     }
   }
+
+  def `handle self binding and lookup correctly`(
+    cleanup: => Unit = ()): Unit = {
+    var registry0: Registry = null
+
+    try {
+      val promise = Promise[(Int, String)]()
+
+      // setup ...
+
+      registry0 = new Registry
+      registry0.bind("future")(promise.future)
+      registry0.bind("intfun")(() => (???): Int)
+
+      // ... and test
+
+      val result0 = registry0.lookupSelf[concurrent.Future[(Int, String)]]("future")
+      val result1 = registry0.lookupSelf[() => Int]("intfun")
+      val futureValue = result0
+      val intfunValue = result1()
+
+      promise.success(5 -> "yay")
+
+      Await.ready(futureValue, 1.minute)
+      futureValue.value should be (Some(Success(5 -> "yay")))
+
+      Await.ready(intfunValue, 1.minute)
+      val remoteException = intercept[RemoteAccessException] { intfunValue.value.get.get }
+      remoteException.reason should matchPattern { case RemoteAccessException.RemoteException("scala.NotImplementedError", _) => }
+    }
+    finally {
+      cleanup
+    }
+  }
+
+  def `handle self subjective binding and lookup correctly`(
+    cleanup: => Unit = ()): Unit = {
+    var registry0: Registry = null
+
+    try {
+      val events = mutable.ListBuffer.empty[String]
+
+      val valueBinding = registry.Binding[String]("value")
+      val methodBinding = registry.Binding[() => String]("method")
+
+      def value(remote: transmitter.RemoteRef) = {
+        events.synchronized { events += "value called" }
+        assert(remote == null)
+        assert(remote != null)
+        "value result"
+      }
+
+      def method(remote: transmitter.RemoteRef) = {
+        events.synchronized { events += "method called" }
+        "method result"
+      }
+
+      // setup ...
+
+      registry0 = new Registry
+      registry0.bindSbj(valueBinding)(value _)
+      registry0.bindSbj(methodBinding)(method _)
+
+      // ... and test
+
+      val result0 = registry0.lookupSelf(valueBinding)
+      val result1 = registry0.lookupSelf(methodBinding)
+
+      assert(false)
+
+      val result0a = result0 map { result => events.synchronized { events += result } }
+      val result0b = result0 map { result => events.synchronized { events += result } }
+      val result1a = result1() map { result => events.synchronized { events += result } }
+      val result1b = result1() map { result => events.synchronized { events += result } }
+
+      Await.ready(Future.sequence(Seq(result0a, result0b, result1a, result1b)), 1.minute)
+
+      events should contain theSameElementsAs Seq(
+        "value called",
+        "value result",
+        "value result",
+        "method called",
+        "method result",
+        "method called",
+        "method result")
+
+      events filter { _ startsWith "value" } should contain theSameElementsInOrderAs Seq(
+        "value called", "value result", "value result")
+
+      events find { _ startsWith "method" } should contain ("method called")
+
+      events.remove(events.indexOf("method called"))
+      events.remove(events.indexOf("method result"))
+
+      events filterNot { _ startsWith "value" } should contain theSameElementsInOrderAs Seq(
+        "method called", "method result")
+    }
+    finally {
+      cleanup
+    }
+  }
+
 }

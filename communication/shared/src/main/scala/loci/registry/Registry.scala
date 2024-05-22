@@ -23,9 +23,12 @@ object Registry {
     final val Close = "Close"
   }
 
-  private final case class Channel(
-      name: String, anchor: String, remote: RemoteRef, registry: Registry)
-        extends transmitter.Channel with Channels.Channel {
+  private final case class ChannelImpl(
+    name: String,
+    anchor: String,
+    remote: RemoteRef,
+    registry: Registry
+  ) extends transmitter.Channel with Channels.Channel {
     val doReceive = Notice.Stream[MessageBuffer]
     val doClosed = Notice.Steady[Unit]
 
@@ -37,22 +40,26 @@ object Registry {
     def open = registry.channels.isOpen(this)
   }
 
-  private final case class AbstractionRef(name: String, remote: RemoteRef,
-    channelName: String, channelAnchor: String, registry: Registry)
-      extends transmitter.AbstractionRef {
-    def derive(name: String) =
-      AbstractionRef(this.name, remote, s"$channelName:$name", channelAnchor, registry)
+  private final case class AbstractionRefImpl(
+    name: String,
+    remote: RemoteRef,
+    channelName: String,
+    channelAnchor: String,
+    registry: Registry
+  ) extends transmitter.AbstractionRef {
+    override def derive(name: String): transmitter.AbstractionRef =
+      AbstractionRefImpl(this.name, remote, s"$channelName:$name", channelAnchor, registry)
 
-    lazy val channel: Registry.Channel =
+    lazy val channel: Registry.ChannelImpl =
       registry.channels.obtain(channelName, channelAnchor, remote)
 
     override def toString: String = s"$name#[channel:$channelName]$remote"
   }
 
-  private object AbstractionRef {
+  private object AbstractionRefImpl {
     def apply(name: String, remote: RemoteRef,
-        channelName: String, registry: Registry): AbstractionRef =
-      AbstractionRef(name, remote, channelName, channelName, registry)
+        channelName: String, registry: Registry): AbstractionRefImpl =
+      AbstractionRefImpl(name, remote, channelName, channelName, registry)
   }
 }
 
@@ -86,10 +93,10 @@ class Registry {
   }
 
 
-  private def createChannel(name: String, anchorDefault: String, remote: RemoteRef) =
-    Registry.Channel(name, anchorDefault, remote, this)
+  private def createChannel(name: String, anchorDefault: String, remote: RemoteRef): Registry.ChannelImpl =
+    Registry.ChannelImpl(name, anchorDefault, remote, this)
 
-  private def closeChannel(channel: Registry.Channel, notifyRemote: Boolean) = {
+  private def closeChannel(channel: Registry.ChannelImpl, notifyRemote: Boolean): Unit = {
     logging.trace(s"closing channel ${channel.name}")
 
     if (notifyRemote)
@@ -104,7 +111,7 @@ class Registry {
   }
 
 
-  private def send(channel: Registry.Channel, message: MessageBuffer) =
+  private def send(channel: Registry.ChannelImpl, message: MessageBuffer): Unit =
     if (channel.open)
       bufferedSend(
         channel,
@@ -113,7 +120,7 @@ class Registry {
           Map(Registry.Message.Channel -> Seq(channel.name)),
           message))
 
-  private def bufferedSend(channel: Registry.Channel, message: Message[Registry.Message.type]): Unit = {
+  private def bufferedSend(channel: Registry.ChannelImpl, message: Message[Registry.Message.type]): Unit = {
     val queued = Option(channelMessages get channel.anchor) exists { messages =>
       messages synchronized {
         val queued = channelMessages containsKey channel.anchor
@@ -146,14 +153,14 @@ class Registry {
       case (Some(Seq(name)), None, None, Some(Seq(channelName)), None) =>
         channelMessages.put(channelName, mutable.ListBuffer.empty)
         bindings.processRequest(
-          message, name, Registry.AbstractionRef(name, remote, channelName, this))
+          message, name, Registry.AbstractionRefImpl(name, remote, channelName, this))
 
       case (None, Some(Seq(name)), None, Some(Seq(channelName)), None) =>
         logging.debug(s"received response upon remote access for $channelName from $remote: $message")
         bindings.processResponse(
           Success(message),
           name,
-          Registry.AbstractionRef(name, remote, channelName, this))
+          Registry.AbstractionRefImpl(name, remote, channelName, this))
 
       case (None, None, Some(Seq(name)), Some(Seq(channelName)), None) =>
         val exception = RemoteAccessException.deserialize(message.decodeString)
@@ -161,7 +168,7 @@ class Registry {
         bindings.processResponse(
           Failure(exception),
           name,
-          Registry.AbstractionRef(name, remote, channelName, this))
+          Registry.AbstractionRefImpl(name, remote, channelName, this))
 
       case (None, None, None, Some(Seq(channelName)), None) =>
         channels.get(channelName, remote) match {
@@ -181,10 +188,10 @@ class Registry {
     }
   }
 
-  private def request(abstraction: Registry.AbstractionRef, message: MessageBuffer) =
+  private def request(abstraction: Registry.AbstractionRefImpl, message: MessageBuffer): Unit =
     send(Registry.Message.Request, abstraction, message)
 
-  private def respond(abstraction: Registry.AbstractionRef, message: Try[MessageBuffer]) = {
+  private def respond(abstraction: Registry.AbstractionRefImpl, message: Try[MessageBuffer]): Unit = {
     message match {
       case Success(message) =>
         send(
@@ -210,7 +217,7 @@ class Registry {
     }
   }
 
-  private def send(method: String, abstraction: Registry.AbstractionRef, message: MessageBuffer) =
+  private def send(method: String, abstraction: Registry.AbstractionRefImpl, message: MessageBuffer): Unit =
     connections.send(
       abstraction.remote,
       Message(
@@ -264,11 +271,28 @@ class Registry {
   def lookup[T, R](binding: Binding[T, R], remote: RemoteRef): R =
     bindings.lookup(
       binding,
-      () => Registry.AbstractionRef(
+      () => Registry.AbstractionRefImpl(
         binding.name,
         remote,
         java.util.UUID.randomUUID.toString,
         this))
+
+  def lookupSelfValue[T](name: String)(implicit builder: BindingBuilder.Value[T, _]): builder.Result =
+    lookupSelf(builder(name))
+
+  def lookupSelf[T](name: String)(
+    implicit builder: BindingBuilder[T, _]): builder.Result =
+    lookupSelf(builder(name))
+
+  def lookupSelf[T, R](binding: Binding[T, R]): R =
+    bindings.lookupSelf[T, R](
+      binding,
+      () => Registry.AbstractionRefImpl(
+        binding.name,
+        null,
+        java.util.UUID.randomUUID.toString,
+        this)
+    )
 
 
   def connect(connector: Connector[Connections.Protocol]): Future[RemoteRef] = {

@@ -40,6 +40,22 @@ class Bindings[A <: AbstractionRef](
       response.notice
     }
 
+  def lookupSelf[T, R](binding: Binding[T, R], createAbstraction: () => A): R = {
+    binding.call(createAbstraction) { (message, abstraction) => {
+      val value: (MessageBuffer, A) => Try[MessageBuffer] = bindings get binding.name
+
+      if (value == null)
+        throw new RemoteAccessException(s"binding not bound to self: $binding")
+
+      val response = Notice.Steady[Try[MessageBuffer]]
+
+      val result: Try[MessageBuffer] = value(message, abstraction)
+      response.set(result)
+
+      response.notice
+    }}
+  }
+
   def processRequest(
       message: MessageBuffer, name: String, abstraction: A): Unit = {
     logging.trace(s"handling remote access for $abstraction")
